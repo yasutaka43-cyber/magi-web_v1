@@ -1,4 +1,5 @@
 # MAGI風 合議システム（Streamlit Cloud）
+https://magi-webv1-hivsnsjeb7v5rudddyuvtz.streamlit.app/
 
 ## 使い方（URLを開くだけ）
 Streamlit CloudでDeploy後、発行されたURLをクリックすると使えます。
