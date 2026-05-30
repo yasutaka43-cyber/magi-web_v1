@@ -328,12 +328,26 @@ personas: Dict[str, PersonaConfig] = st.session_state.personas
 
 tab1, tab2 = st.tabs(["合議（投票）", "人格編集・生成"])
 
+
 # ---- Tab1: Evaluate ----
 with tab1:
     colL, colR = st.columns([1, 1], gap="large")
 
     with colL:
-        # ...（提案入力は今のまま）...
+        st.subheader("提案入力")
+        title = st.text_input("タイトル", value="例：社内AIチャット導入")
+        desc = st.text_area("説明", value="例：問い合わせ対応を自動化して工数削減する", height=90)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            cost = st.slider("cost（コスト）", 0, 100, 60)
+            risk = st.slider("risk（リスク）", 0, 100, 50)
+        with c2:
+            urgency = st.slider("urgency（緊急性）", 0, 100, 55)
+            public_impact = st.slider("public_impact（評判/社会影響）", 0, 100, 40)
+
+        hold_priority = st.toggle("HOLD優先モード", value=True)
+
         run = st.button("判定（投票）", type="primary")
         debate = st.button("議論する（AI同士）")
         rounds = st.slider("議論ラウンド数", 1, 2, 2)
@@ -341,9 +355,11 @@ with tab1:
     with colR:
         st.subheader("結果")
 
+        # どちらか押されたら、まず共通の材料を作る
         if run or debate:
-            votes_only = {}
-            details = {}
+            votes_only: Dict[str, Vote] = {}
+            details: Dict[str, Any] = {}
+
             for key, cfg in personas.items():
                 v, reason, score, breakdown = score_vote(cfg, cost, risk, urgency, public_impact)
                 votes_only[key] = v
@@ -354,6 +370,70 @@ with tab1:
                     "breakdown": breakdown,
                     "style_note": cfg.style_note,
                 }
+
+        # 判定（投票）
+        if run:
+            final = council_decide(votes_only, hold_priority=hold_priority)
+            if final == Vote.YES:
+                st.success(f"FINAL: {final.value}")
+            elif final == Vote.NO:
+                st.error(f"FINAL: {final.value}")
+            else:
+                st.warning(f"FINAL: {final.value}")
+
+            st.markdown("### 各人格の投票（理由＋内訳）")
+            for key, r in details.items():
+                with st.expander(f"{key}: {r['vote']}"):
+                    st.write(f"方針: {r['style_note']}")
+                    st.write(f"理由: {r['reason']}")
+                    st.write(f"スコア: {r['score']:.1f}")
+                    st.json(r["breakdown"])
+
+            # UI-B（生JSONは出さない）：必要ならダウンロードだけ
+            result_obj = {"final": final.value, "details": details}
+            st.download_button(
+                "結果をJSONでダウンロード（必要なときだけ）",
+                data=json.dumps(result_obj, ensure_ascii=False, indent=2),
+                file_name="magi_result.json",
+                mime="application/json",
+            )
+
+        # 議論（AI同士）
+        elif debate:
+            proposal_obj = {
+                "title": title,
+                "description": desc,
+                "cost": cost,
+                "risk": risk,
+                "urgency": urgency,
+                "public_impact": public_impact,
+            }
+
+            debate_log = build_debate_log(personas, proposal_obj, details, rounds=rounds)
+
+            st.markdown("### 議論ログ（MAGI風）")
+            for item in debate_log:
+                speaker = item["speaker"]
+                content = item["content"]
+
+                if speaker == "SYSTEM":
+                    st.info(content)
+                else:
+                    with st.chat_message("assistant", avatar="🤖"):
+                        st.markdown(f"**{speaker}**")
+                        st.write(content)
+
+            final = council_decide(votes_only, hold_priority=hold_priority)
+            st.markdown("### 議論後の合議（参考）")
+            if final == Vote.YES:
+                st.success(f"FINAL: {final.value}")
+            elif final == Vote.NO:
+                st.error(f"FINAL: {final.value}")
+            else:
+                st.warning(f"FINAL: {final.value}")
+
+        else:
+            st.info("左で入力して『判定（投票）』または『議論する（AI同士）』を押してください。")
 
 # ---- Tab2: Persona edit + generator ----
 with tab2:
