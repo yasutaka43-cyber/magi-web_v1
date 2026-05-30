@@ -330,6 +330,7 @@ tab1, tab2 = st.tabs(["合議（投票）", "人格編集・生成"])
 
 
 # ---- Tab1: Evaluate ----
+# ---- Tab1: Evaluate ----
 with tab1:
     colL, colR = st.columns([1, 1], gap="large")
 
@@ -355,7 +356,7 @@ with tab1:
     with colR:
         st.subheader("結果")
 
-        # どちらか押されたら、まず共通の材料を作る
+        # run / debate のどちらか押されたら共通の材料を作る
         if run or debate:
             votes_only: Dict[str, Vote] = {}
             details: Dict[str, Any] = {}
@@ -371,77 +372,79 @@ with tab1:
                     "style_note": cfg.style_note,
                 }
 
-        # 判定（投票）
-        if run:
-            final = council_decide(votes_only, hold_priority=hold_priority)
-            if final == Vote.YES:
-                st.success(f"FINAL: {final.value}")
-            elif final == Vote.NO:
-                st.error(f"FINAL: {final.value}")
-            else:
-                st.warning(f"FINAL: {final.value}")
+        # UI：投票結果 / 議論ログ をタブで分ける
+        result_tab, debate_tab = st.tabs(["投票結果", "議論ログ"])
 
-        st.markdown("### 各人格の投票")
-        for key, r in details.items():
-            with st.container(border=True):
-                # 1行目：投票をバッジっぽく
-                st.markdown(f"**{key}**　→　**{r['vote']}**")
-                # 2行目：理由は短く（長すぎたら切る）
-                short_reason = r["reason"]
-                if len(short_reason) > 180:
-                    short_reason = short_reason[:180] + "…"
-                st.write(short_reason)
-
-            with st.expander("詳細（内訳・方針・スコア）"):
-                st.write(f"方針: {r['style_note']}")
-                st.write(f"スコア: {r['score']:.1f}")
-                st.json(r["breakdown"])
-        
-            # UI-B（生JSONは出さない）：必要ならダウンロードだけ
-            result_obj = {"final": final.value, "details": details}
-            st.download_button(
-                "結果をJSONでダウンロード（必要なときだけ）",
-                data=json.dumps(result_obj, ensure_ascii=False, indent=2),
-                file_name="magi_result.json",
-                mime="application/json",
-            )
-
-        # 議論（AI同士）
-        elif debate:
-            proposal_obj = {
-                "title": title,
-                "description": desc,
-                "cost": cost,
-                "risk": risk,
-                "urgency": urgency,
-                "public_impact": public_impact,
-            }
-
-            debate_log = build_debate_log(personas, proposal_obj, details, rounds=rounds)
-
-            st.markdown("### 議論ログ（MAGI風）")
-            for item in debate_log:
-                speaker = item["speaker"]
-                content = item["content"]
-
-                if speaker == "SYSTEM":
-                    st.info(content)
+        with result_tab:
+            if run:
+                final = council_decide(votes_only, hold_priority=hold_priority)
+                if final == Vote.YES:
+                    st.success(f"FINAL: {final.value}")
+                elif final == Vote.NO:
+                    st.error(f"FINAL: {final.value}")
                 else:
-                    with st.chat_message("assistant", avatar="🤖"):
-                        st.markdown(f"**{speaker}**")
-                        st.write(content)
+                    st.warning(f"FINAL: {final.value}")
 
-            final = council_decide(votes_only, hold_priority=hold_priority)
-            st.markdown("### 議論後の合議（参考）")
-            if final == Vote.YES:
-                st.success(f"FINAL: {final.value}")
-            elif final == Vote.NO:
-                st.error(f"FINAL: {final.value}")
+                st.markdown("### 各人格の投票（カード表示）")
+                for key, r in details.items():
+                    with st.container(border=True):
+                        st.markdown(f"**{key}**　→　**{r['vote']}**")
+
+                        short_reason = r["reason"]
+                        if len(short_reason) > 180:
+                            short_reason = short_reason[:180] + "…"
+                        st.write(short_reason)
+
+                        with st.expander("詳細（内訳・方針・スコア）"):
+                            st.write(f"方針: {r['style_note']}")
+                            st.write(f"スコア: {r['score']:.1f}")
+                            st.json(r["breakdown"])
+
+                # UI-B：生JSONは画面に出さず、必要ならDLだけ
+                result_obj = {"final": final.value, "details": details}
+                st.download_button(
+                    "結果をJSONでダウンロード（必要なときだけ）",
+                    data=json.dumps(result_obj, ensure_ascii=False, indent=2),
+                    file_name="magi_result.json",
+                    mime="application/json",
+                )
             else:
-                st.warning(f"FINAL: {final.value}")
+                st.info("左で入力して『判定（投票）』を押すと結果が出ます。")
 
-        else:
-            st.info("左で入力して『判定（投票）』または『議論する（AI同士）』を押してください。")
+        with debate_tab:
+            if debate:
+                proposal_obj = {
+                    "title": title,
+                    "description": desc,
+                    "cost": cost,
+                    "risk": risk,
+                    "urgency": urgency,
+                    "public_impact": public_impact,
+                }
+
+                debate_log = build_debate_log(personas, proposal_obj, details, rounds=rounds)
+
+                st.markdown("### 議論ログ（MAGI風）")
+                for item in debate_log:
+                    speaker = item["speaker"]
+                    content = item["content"]
+                    if speaker == "SYSTEM":
+                        st.info(content)
+                    else:
+                        with st.chat_message("assistant", avatar="🤖"):
+                            st.markdown(f"**{speaker}**")
+                            st.write(content)
+
+                final = council_decide(votes_only, hold_priority=hold_priority)
+                st.markdown("### 議論後の合議（参考）")
+                if final == Vote.YES:
+                    st.success(f"FINAL: {final.value}")
+                elif final == Vote.NO:
+                    st.error(f"FINAL: {final.value}")
+                else:
+                    st.warning(f"FINAL: {final.value}")
+            else:
+                st.info("左で入力して『議論する（AI同士）』を押すと議論ログが出ます。")
 
 # ---- Tab2: Persona edit + generator ----
 with tab2:
