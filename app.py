@@ -1,4 +1,6 @@
 import json
+import time
+import random
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Dict, Any, Tuple
@@ -98,14 +100,29 @@ def _llm(text_system: str, text_user: str) -> str:
     api_key = st.secrets.get("OPENAI_API_KEY", None)
     client = OpenAI(api_key=api_key)
     model = st.secrets.get("OPENAI_MODEL", "gpt-5-mini")
-    resp = client.responses.create(
-        model=model,
-        input=[
-            {"role": "system", "content": text_system},
-            {"role": "user", "content": text_user},
-        ],
-    )
-    return getattr(resp, "output_text", None) or str(resp)
+
+    max_retries = 5
+    base_sleep = 1.0
+
+    for attempt in range(max_retries):
+        try:
+            resp = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": text_system},
+                    {"role": "user", "content": text_user},
+                ],
+            )
+            return getattr(resp, "output_text", None) or str(resp)
+
+        except Exception as e:
+            if "RateLimit" in e.__class__.__name__:
+                # 1s,2s,4s... + 少しランダムで待って再試行
+                time.sleep(base_sleep * (2 ** attempt) + random.uniform(0, 0.5))
+                continue
+            raise
+
+    return "（混雑のため議論生成に失敗。少し待って再実行してください）"
 
 def build_debate_log(personas: Dict[str, PersonaConfig], proposal: dict, details: Dict[str, Any], rounds: int = 2) -> list:
     """
@@ -330,7 +347,6 @@ tab1, tab2 = st.tabs(["合議（投票）", "人格編集・生成"])
 
 
 # ---- Tab1: Evaluate ----
-# ---- Tab1: Evaluate ----
 with tab1:
     colL, colR = st.columns([1, 1], gap="large")
 
@@ -352,6 +368,23 @@ with tab1:
         run = st.button("判定（投票）", type="primary")
         debate = st.button("議論する（AI同士）")
         rounds = st.slider("議論ラウンド数", 1, 2, 2)
+
+# --- クールダウン（連打防止）---
+COOLDOWN_SEC = 8  # 好きな秒数に変更OK（例：5〜15）
+
+if "last_debate_ts" not in st.session_state:
+    st.session_state.last_debate_ts = 0.0
+
+if debate:
+    now = time.time()
+    remain = COOLDOWN_SEC - (now - st.session_state.last_debate_ts)
+    if remain > 0:
+        st.warning(f"連続実行を防ぐため、あと {remain:.0f} 秒待ってください。")
+        debate = False  # ←ここが重要：今回の議論を無効化
+    else:
+        st.session_state.last_debate_ts = now
+
+    
 
     with colR:
         st.subheader("結果")
