@@ -507,6 +507,7 @@ with colR:
                 data=json.dumps(result_obj, ensure_ascii=False, indent=2),
                 file_name="magi_result.json",
                 mime="application/json",
+                key="dl_result_json",   # ★追加
             )
 
             _push_history({
