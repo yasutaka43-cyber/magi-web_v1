@@ -365,24 +365,27 @@ with tab1:
 
         hold_priority = st.toggle("HOLD優先モード", value=True)
 
+        # ボタン類（←この行頭のスペースが重要：with colL の中に置く）
         run = st.button("判定（投票）", type="primary")
-        debate = st.button("議論する（AI同士）")
+
+        # --- クールダウン（連打防止）---
+        COOLDOWN_SEC = 8  # 5〜15くらいで好み
+
+        if "last_debate_ts" not in st.session_state:
+            st.session_state.last_debate_ts = 0.0
+
+        now = time.time()
+        remain = COOLDOWN_SEC - (now - st.session_state.last_debate_ts)
+        cooling = remain > 0
+
+        debate = st.button("議論する（AI同士）", disabled=cooling)
+        if cooling:
+            st.info(f"連続実行を防ぐため、あと {remain:.0f} 秒待ってください。")
+
         rounds = st.slider("議論ラウンド数", 1, 2, 2)
 
-# --- クールダウン（連打防止）---
-COOLDOWN_SEC = 8  # 好きな秒数に変更OK（例：5〜15）
-
-if "last_debate_ts" not in st.session_state:
-    st.session_state.last_debate_ts = 0.0
-
-if debate:
-    now = time.time()
-    remain = COOLDOWN_SEC - (now - st.session_state.last_debate_ts)
-    if remain > 0:
-        st.warning(f"連続実行を防ぐため、あと {remain:.0f} 秒待ってください。")
-        debate = False  # ←ここが重要：今回の議論を無効化
-    else:
-        st.session_state.last_debate_ts = now
+        if debate:
+            st.session_state.last_debate_ts = time.time()
 
     
 
