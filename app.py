@@ -124,9 +124,40 @@ def _llm(text_system: str, text_user: str) -> str:
 
     return "（混雑のため議論生成に失敗。少し待って再実行してください）"
 
-def build_debate_log(personas: Dict[str, PersonaConfig], proposal: dict, details: Dict[str, Any], rounds: int = 2) -> list:
+
+import re
+
+def _extract_vote_from_text(text: str) -> str | None:
     """
-    returns: [{speaker, content}, ...]
+    LLM出力から YES/NO/HOLD を拾う。
+    想定：文末に「最終投票：YES」などが入る。
+    """
+    if not text:
+        return None
+
+    # よくあるパターンを拾う（日本語/英語混在に耐える）
+    patterns = [
+        r"最終投票\s*[:：]\s*(YES|NO|HOLD)",
+        r"Final\s*Vote\s*[:：]\s*(YES|NO|HOLD)",
+        r"\b(Vote|投票)\b.*\b(YES|NO|HOLD)\b",
+        r"\b(YES|NO|HOLD)\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            v = m.group(m.lastindex)  # 最後のキャプチャ
+            v = v.upper()
+            if v in ("YES", "NO", "HOLD"):
+                return v
+    return None
+
+
+def build_debate_log(personas: Dict[str, PersonaConfig], proposal: dict, details: Dict[str, Any], rounds: int = 2):
+    """
+    returns:
+      log: [{speaker, content}, ...]
+      votes_after: {persona_name: "YES|NO|HOLD"}
+      chair_summary: str | None
     """
     title = proposal.get("title", "")
     desc = proposal.get("description", "")
@@ -134,6 +165,9 @@ def build_debate_log(personas: Dict[str, PersonaConfig], proposal: dict, details
 
     log = []
     log.append({"speaker": "SYSTEM", "content": f"議題：{title}\n概要：{desc}\n指標：{numbers}\n---\nRound1：各人格の主張"})
+
+    # 議論前の投票（初期値）
+    votes_after = {name: details[name]["vote"] for name in personas.keys()}
 
     # Round1
     for name, cfg in personas.items():
@@ -143,41 +177,60 @@ def build_debate_log(personas: Dict[str, PersonaConfig], proposal: dict, details
         breakdown = d["breakdown"]
 
         if _can_use_openai():
-            sys = f"あなたは意思決定人格『{name}』。口調は「{_persona_tone(name)}」。短く、箇条書きを混ぜ、賛否・根拠・懸念・条件を述べて。"
+            sys = f"あなたは意思決定人格『{name}』。口調は「{_persona_tone(name)}」。短く、箇条書きを混ぜ、賛否・根拠・懸念・条件を述べて。最後に「最終投票：YES/NO/HOLD」はまだ書かない。"
             usr = f"提案:{title}\n{desc}\n数値:{numbers}\n暫定投票:{vote}\n根拠:{reason}\n内訳:{json.dumps(breakdown, ensure_ascii=False)}"
             content = _llm(sys, usr)
         else:
-            content = f"（{_persona_tone(name)}）結論は {vote}。\n理由：{reason}\n内訳：{breakdown}"
+            content = f"（{_persona_tone(name)}）結論は {vote}。\n理由：{reason}"
 
         log.append({"speaker": name, "content": content})
 
     if rounds < 2:
-        return log
+        return log, votes_after, None
 
-    # Round2
-    log.append({"speaker": "SYSTEM", "content": "---\nRound2：相互反論と妥協案（条件付きYESなど）"})
-    others_summary = {k: {"vote": details[k]["vote"], "reason": details[k]["reason"][:100]} for k in personas.keys()}
+    # Round2（ここで“最終投票”を書かせる）
+    log.append({"speaker": "SYSTEM", "content": "---\nRound2：相互反論と妥協案 → 最終投票（再投票）"})
+    others_summary = {k: {"vote": details[k]["vote"], "reason": details[k]["reason"][:120]} for k in personas.keys()}
 
     for name, cfg in personas.items():
         others = {k: v for k, v in others_summary.items() if k != name}
+
         if _can_use_openai():
-            sys = f"あなたは意思決定人格『{name}』。口調は「{_persona_tone(name)}」。他者の意見に1つ反論し、妥協案（条件）を提示。最後に最終投票（YES/NO/HOLD）を1行で。"
-            usr = f"提案:{title}\n数値:{numbers}\n他者意見:{json.dumps(others, ensure_ascii=False)}\nあなたの暫定投票:{details[name]['vote']}\n根拠:{details[name]['reason']}"
+            sys = (
+                f"あなたは意思決定人格『{name}』。口調は「{_persona_tone(name)}」。"
+                "他者の意見に1つ反論し、妥協案（条件）を提示。"
+                "最後に必ず 1行で「最終投票：YES/NO/HOLD」を出力する。"
+            )
+            usr = (
+                f"提案:{title}\n数値:{numbers}\n"
+                f"他者意見:{json.dumps(others, ensure_ascii=False)}\n"
+                f"あなたの暫定投票:{details[name]['vote']}\n根拠:{details[name]['reason']}\n"
+                "注意：最終投票は議論を踏まえて変更してよい。"
+            )
             content = _llm(sys, usr)
         else:
-            # AIなしの場合の簡易ログ
-            target = next(iter(others.keys()))
+            # AIなしの場合：暫定のまま
             content = (
-                f"（{_persona_tone(name)}）{target}の意見は理解するが、前提が弱い。\n"
-                f"- {target}：{others[target]['vote']} / {others[target]['reason']}\n"
-                "妥協案：条件付きで進める（ガードレールを先に敷く）。\n"
+                f"（{_persona_tone(name)}）他者の意見を踏まえ、条件付きで進める余地はある。\n"
                 f"最終投票：{details[name]['vote']}"
             )
 
+        # ここで最終投票を抽出して votes_after を更新
+        extracted = _extract_vote_from_text(content)
+        if extracted is None:
+            extracted = details[name]["vote"]  # 取れなければ暫定のまま
+        votes_after[name] = extracted
+
         log.append({"speaker": name, "content": content})
 
-    return log
+    # 議長サマリー（任意：OpenAIが使える時だけ）
+    chair_summary = None
+    if _can_use_openai():
+        sys = "あなたは議長（SYSTEM）。議論ログを読み、結論・条件・次のToDoを3点で簡潔に要約。"
+        usr = "議論ログ:\n" + "\n\n".join([f"[{x['speaker']}]\n{x['content']}" for x in log])
+        chair_summary = _llm(sys, usr)
 
+    return log, votes_after, chair_summary
 
 def score_vote(cfg: PersonaConfig, cost: int, risk: int, urgency: int, public_impact: int) -> Tuple[Vote, str, float, Dict[str, Any]]:
     # 強制ルール
@@ -408,7 +461,7 @@ with tab1:
                     "style_note": cfg.style_note,
                 }
 
-        # UI：投票結果 / 議論ログ をタブで分ける
+                # UI：投票結果 / 議論ログ をタブで分ける
         result_tab, debate_tab = st.tabs(["投票結果", "議論ログ"])
 
         with result_tab:
@@ -436,7 +489,6 @@ with tab1:
                             st.write(f"スコア: {r['score']:.1f}")
                             st.json(r["breakdown"])
 
-                # UI-B：生JSONは画面に出さず、必要ならDLだけ
                 result_obj = {"final": final.value, "details": details}
                 st.download_button(
                     "結果をJSONでダウンロード（必要なときだけ）",
@@ -458,7 +510,9 @@ with tab1:
                     "public_impact": public_impact,
                 }
 
-                debate_log = build_debate_log(personas, proposal_obj, details, rounds=rounds)
+                debate_log, votes_after, chair_summary = build_debate_log(
+                    personas, proposal_obj, details, rounds=rounds
+                )
 
                 st.markdown("### 議論ログ（MAGI風）")
                 for item in debate_log:
@@ -471,17 +525,27 @@ with tab1:
                             st.markdown(f"**{speaker}**")
                             st.write(content)
 
-                final = council_decide(votes_only, hold_priority=hold_priority)
+                final_after = council_decide(
+                    {k: Vote(v) for k, v in votes_after.items()},
+                    hold_priority=hold_priority
+                )
+
                 st.markdown("### 議論後の合議（参考）")
-                if final == Vote.YES:
-                    st.success(f"FINAL: {final.value}")
-                elif final == Vote.NO:
-                    st.error(f"FINAL: {final.value}")
+                if final_after == Vote.YES:
+                    st.success(f"FINAL: {final_after.value}")
+                elif final_after == Vote.NO:
+                    st.error(f"FINAL: {final_after.value}")
                 else:
-                    st.warning(f"FINAL: {final.value}")
+                    st.warning(f"FINAL: {final_after.value}")
+
+                if chair_summary:
+                    st.markdown("### 議長サマリー（要点）")
+                    st.write(chair_summary)
+
             else:
                 st.info("左で入力して『議論する（AI同士）』を押すと議論ログが出ます。")
 
+    
 # ---- Tab2: Persona edit + generator ----
 with tab2:
     st.subheader("人格編集")
