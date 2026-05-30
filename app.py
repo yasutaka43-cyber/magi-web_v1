@@ -381,14 +381,22 @@ with tab1:
             else:
                 st.warning(f"FINAL: {final.value}")
 
-            st.markdown("### 各人格の投票（理由＋内訳）")
-            for key, r in details.items():
-                with st.expander(f"{key}: {r['vote']}"):
-                    st.write(f"方針: {r['style_note']}")
-                    st.write(f"理由: {r['reason']}")
-                    st.write(f"スコア: {r['score']:.1f}")
-                    st.json(r["breakdown"])
+        st.markdown("### 各人格の投票")
+        for key, r in details.items():
+            with st.container(border=True):
+                # 1行目：投票をバッジっぽく
+                st.markdown(f"**{key}**　→　**{r['vote']}**")
+                # 2行目：理由は短く（長すぎたら切る）
+                short_reason = r["reason"]
+                if len(short_reason) > 180:
+                    short_reason = short_reason[:180] + "…"
+                st.write(short_reason)
 
+            with st.expander("詳細（内訳・方針・スコア）"):
+                st.write(f"方針: {r['style_note']}")
+                st.write(f"スコア: {r['score']:.1f}")
+                st.json(r["breakdown"])
+        
             # UI-B（生JSONは出さない）：必要ならダウンロードだけ
             result_obj = {"final": final.value, "details": details}
             st.download_button(
