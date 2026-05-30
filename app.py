@@ -455,82 +455,166 @@ with tab1:
 
     
 
-    with colR:
-        st.subheader("結果")
+with colR:
+    st.subheader("結果")
 
-        # run / debate のどちらか押されたら共通の材料を作る
-        if run or debate:
-            votes_only: Dict[str, Vote] = {}
-            details: Dict[str, Any] = {}
+    # run / debate のどちらか押されたら共通の材料を作る
+    votes_only: Dict[str, Vote] = {}
+    details: Dict[str, Any] = {}
 
-            for key, cfg in personas.items():
-                v, reason, score, breakdown = score_vote(cfg, cost, risk, urgency, public_impact)
-                votes_only[key] = v
-                details[key] = {
-                    "vote": v.value,
-                    "reason": reason,
-                    "score": score,
-                    "breakdown": breakdown,
-                    "style_note": cfg.style_note,
-                }
+    if run or debate:
+        for key, cfg in personas.items():
+            v, reason, score, breakdown = score_vote(cfg, cost, risk, urgency, public_impact)
+            votes_only[key] = v
+            details[key] = {
+                "vote": v.value,
+                "reason": reason,
+                "score": score,
+                "breakdown": breakdown,
+                "style_note": cfg.style_note,
+            }
 
-                # UI：投票結果 / 議論ログ をタブで分ける
-        result_tab, debate_tab = st.tabs(["投票結果", "議論ログ"])
+    # UI：投票結果 / 議論ログ
+    result_tab, debate_tab = st.tabs(["投票結果", "議論ログ"])
 
-
-        # ===== 履歴表示（右側の下）=====
-        st.divider()
-        st.subheader("履歴（最新）")
-        
-        hist = st.session_state.history
-        if not hist:
-            st.info("まだ履歴がありません。『判定（投票）』または『議論する（AI同士）』を実行すると貯まります。")
-        else:
-            # 一覧（最新10件）
-            shown = hist[:10]
-            labels = []
-            for i, h in enumerate(shown):
-                kind = "投票" if h["type"] == "vote" else "議論"
-                labels.append(f"{i+1}. [{kind}] {h['title']}")
-        
-            idx = st.selectbox("履歴を選択", options=list(range(len(shown))), format_func=lambda i: labels[i])
-            sel = shown[idx]
-        
-            kind = "投票" if sel["type"] == "vote" else "議論"
-            st.markdown(f"**種類**：{kind}")
-            st.markdown(f"**タイトル**：{sel['title']}")
-            st.write(sel["description"])
-            st.write("入力値:", sel["inputs"])
-        
-            if sel["type"] == "vote":
-                st.success(f"FINAL: {sel['final']}")
-                for key, r in sel["details"].items():
-                    with st.container(border=True):
-                        st.markdown(f"**{key}** → **{r['vote']}**")
-                        st.write(r["reason"])
+    with result_tab:
+        if run:
+            final = council_decide(votes_only, hold_priority=hold_priority)
+            if final == Vote.YES:
+                st.success(f"FINAL: {final.value}")
+            elif final == Vote.NO:
+                st.error(f"FINAL: {final.value}")
             else:
-                st.success(f"FINAL（議論後）: {sel['final_after']}")
-                st.write("最終投票:", sel["votes_after"])
-                if sel.get("chair_summary"):
-                    st.markdown("### 議長サマリー")
-                    st.write(sel["chair_summary"])
-                with st.expander("議論ログを表示"):
-                    for item in sel["debate_log"]:
-                        st.markdown(f"**[{item['speaker']}]**")
-                        st.write(item["content"])
-        
+                st.warning(f"FINAL: {final.value}")
+
+            st.markdown("### 各人格の投票（カード表示）")
+            for key, r in details.items():
+                with st.container(border=True):
+                    st.markdown(f"**{key}**　→　**{r['vote']}**")
+                    short_reason = r["reason"]
+                    if len(short_reason) > 180:
+                        short_reason = short_reason[:180] + "…"
+                    st.write(short_reason)
+
+                    with st.expander("詳細（内訳・方針・スコア）"):
+                        st.write(f"方針: {r['style_note']}")
+                        st.write(f"スコア: {r['score']:.1f}")
+                        st.json(r["breakdown"])
+
+            result_obj = {"final": final.value, "details": details}
             st.download_button(
-                "この履歴をJSONでダウンロード",
-                data=json.dumps(sel, ensure_ascii=False, indent=2),
-                file_name="magi_history_item.json",
+                "結果をJSONでダウンロード（必要なときだけ）",
+                data=json.dumps(result_obj, ensure_ascii=False, indent=2),
+                file_name="magi_result.json",
                 mime="application/json",
             )
-        
-            if st.button("履歴を全てクリア"):
-                st.session_state.history = []
-                st.success("履歴をクリアしました。")
-                st.rerun()
 
+            _push_history({
+                "type": "vote",
+                "ts": time.time(),
+                "title": title,
+                "description": desc,
+                "inputs": {"cost": cost, "risk": risk, "urgency": urgency, "public_impact": public_impact},
+                "final": final.value,
+                "details": details,
+            })
+        else:
+            st.info("左で入力して『判定（投票）』を押すと結果が出ます。")
+
+    with debate_tab:
+        if debate:
+            proposal_obj = {
+                "title": title,
+                "description": desc,
+                "cost": cost,
+                "risk": risk,
+                "urgency": urgency,
+                "public_impact": public_impact,
+            }
+
+            debate_log, votes_after, chair_summary = build_debate_log(
+                personas, proposal_obj, details, rounds=rounds
+            )
+
+            st.markdown("### 議論ログ（MAGI風）")
+            for item in debate_log:
+                speaker = item["speaker"]
+                content = item["content"]
+                if speaker == "SYSTEM":
+                    st.info(content)
+                else:
+                    with st.chat_message("assistant", avatar="🤖"):
+                        st.markdown(f"**{speaker}**")
+                        st.write(content)
+
+            final_after = council_decide(
+                {k: Vote(v) for k, v in votes_after.items()},
+                hold_priority=hold_priority
+            )
+
+            st.markdown("### 議論後の合議（参考）")
+            if final_after == Vote.YES:
+                st.success(f"FINAL: {final_after.value}")
+            elif final_after == Vote.NO:
+                st.error(f"FINAL: {final_after.value}")
+            else:
+                st.warning(f"FINAL: {final_after.value}")
+
+            if chair_summary:
+                st.markdown("### 議長サマリー（要点）")
+                st.write(chair_summary)
+
+            _push_history({
+                "type": "debate",
+                "ts": time.time(),
+                "title": title,
+                "description": desc,
+                "inputs": {"cost": cost, "risk": risk, "urgency": urgency, "public_impact": public_impact, "rounds": rounds},
+                "final_after": final_after.value,
+                "votes_after": votes_after,
+                "chair_summary": chair_summary,
+                "debate_log": debate_log,
+            })
+        else:
+            st.info("左で入力して『議論する（AI同士）』を押すと議論ログが出ます。")
+
+    # ===== 履歴表示（タブの後＝colRの最後）=====
+    st.divider()
+    st.subheader("履歴（最新）")
+
+    hist = st.session_state.history
+    if not hist:
+        st.info("まだ履歴がありません。")
+    else:
+        shown = hist[:10]
+        labels = []
+        for i, h in enumerate(shown):
+            kind = "投票" if h["type"] == "vote" else "議論"
+            labels.append(f"{i+1}. [{kind}] {h['title']}")
+
+        idx = st.selectbox("履歴を選択", options=list(range(len(shown))), format_func=lambda i: labels[i])
+        sel = shown[idx]
+
+        st.write("入力値:", sel["inputs"])
+        if sel["type"] == "vote":
+            st.success(f"FINAL: {sel['final']}")
+        else:
+            st.success(f"FINAL（議論後）: {sel['final_after']}")
+            if sel.get("chair_summary"):
+                st.write(sel["chair_summary"])
+
+        st.download_button(
+            "この履歴をJSONでダウンロード",
+            data=json.dumps(sel, ensure_ascii=False, indent=2),
+            file_name="magi_history_item.json",
+            mime="application/json",
+        )
+
+        if st.button("履歴を全てクリア"):
+            st.session_state.history = []
+            st.success("履歴をクリアしました。")
+            st.rerun()
+            
         with result_tab:
             if run:
                 final = council_decide(votes_only, hold_priority=hold_priority)
